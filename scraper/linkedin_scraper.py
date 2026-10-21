@@ -374,8 +374,8 @@ def scrape_posts_for_hashtag(page: Page, hashtag_query: str) -> list[dict]:
         # ── 1. Automatically click all '...more' buttons on screen ───────
         try:
             page.evaluate("""() => {
-                const moreButtons = Array.from(document.querySelectorAll("button"))
-                    .filter(b => b.innerText && (b.innerText.includes("more") || b.innerText.includes("…")));
+                const moreButtons = Array.from(document.querySelectorAll("button, span"))
+                    .filter(b => b.innerText && (b.innerText.toLowerCase().includes("more") || b.innerText.includes("…")));
                 moreButtons.forEach(btn => {
                     try { btn.click(); } catch(e) {}
                 });
@@ -384,32 +384,56 @@ def scrape_posts_for_hashtag(page: Page, hashtag_query: str) -> list[dict]:
         except Exception:
             pass
 
-        # ── 2. Extract cards anchored to the Like/Action bar ───────────
+        # ── 2. Extract cards anchored to the Action / Reaction bar ────────
         try:
-            extracted_batch = page.evaluate("""() => {
-                const likeBtns = Array.from(document.querySelectorAll("button"))
-                    .filter(b => b.innerText && b.innerText.trim() === "Like");
+            extracted_batch = page.evaluate(r"""() => {
+                // Find reaction buttons (supports new reaction-count icon buttons and classic 'Like' text)
+                const actionBtns = Array.from(document.querySelectorAll("button")).filter(b => {
+                    const aria = (b.getAttribute("aria-label") || "").toLowerCase();
+                    const txt = (b.innerText || "").trim().toLowerCase();
+                    return aria.includes("reaction button") || aria.includes("like") || txt === "like";
+                });
 
-                return likeBtns.map(btn => {
+                const uniqueCards = [];
+                const seenCards = new Set();
+
+                actionBtns.forEach(btn => {
                     let p = btn;
                     for (let i = 0; i < 20; i++) {
                         if (!p || !p.parentElement || p.parentElement.tagName === "BODY" || p.parentElement.id === "root") break;
-                        const countLikes = p.parentElement.querySelectorAll("button").length;
+                        const countLikes = p.parentElement.querySelectorAll("button[aria-label*='eaction'], button[aria-label*='ike']").length;
                         const txt = p.parentElement.innerText || "";
-                        if (countLikes > 15 || txt.length > 5000) break;
+                        if (countLikes > 8 || txt.length > 5000) break;
                         p = p.parentElement;
                     }
-                    const link = p.querySelector("a[href*='/in/']");
-                    const postLink = p.querySelector("a[href*='/feed/update/'], a[href*='/posts/'], a[href*='activity']");
-                    return {
-                        name: link ? link.innerText.trim() : "Recruiter",
-                        profile_url: link ? link.href.split("?")[0] : "",
-                        post_url: postLink ? postLink.href.split("?")[0] : "",
+                    if (!p || seenCards.has(p)) return;
+                    seenCards.add(p);
+
+                    // Extract poster name
+                    let name = "Recruiter";
+                    const nameLink = Array.from(p.querySelectorAll("a[href*='/in/']"))
+                        .find(a => a.innerText && a.innerText.trim().length > 2 && !a.innerText.toLowerCase().includes("portfolio"));
+                    if (nameLink) {
+                        const rawText = nameLink.innerText.trim();
+                        name = rawText.split("•")[0].split(String.fromCharCode(10))[0].trim() || "Recruiter";
+                    }
+
+                    // Extract post link
+                    const postLink = p.querySelector("a[href*='/feed/update/'], a[href*='/posts/'], a[href*='activity:'], a[href*='/jobs/view/']");
+                    const postUrl = postLink ? postLink.href.split("?")[0] : "";
+
+                    uniqueCards.push({
+                        name: name,
+                        profile_url: nameLink ? nameLink.href.split("?")[0] : "",
+                        post_url: postUrl,
                         text: p.innerText || ""
-                    };
+                    });
                 });
+
+                return uniqueCards;
             }""")
         except Exception as e:
+            print(f"[Scraper] ⚠️ Extraction error: {e}")
             extracted_batch = []
 
         before_count = len(posts_data)

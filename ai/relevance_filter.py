@@ -95,10 +95,23 @@ def is_job_relevant(post_text: str) -> tuple[bool, str]:
     text_lower = post_text.lower()
 
     # ── 1. Check Profile / Role Keyword Relevance ─────────────
-    matched_keywords = [
-        kw for kw in Config.TARGET_ROLE_KEYWORDS
-        if kw in text_lower
-    ]
+    # Normalize punctuation (e.g. 'AI/ML' -> 'ai ml', 'Machine-Learning' -> 'machine learning')
+    normalized_text = re.sub(r'[/_\-&]+', ' ', post_text.lower())
+    compact_text = re.sub(r'[\s/_\-&]+', '', post_text.lower())
+
+    matched_keywords = []
+    for kw in Config.TARGET_ROLE_KEYWORDS:
+        kw_clean = kw.strip().lower()
+        if not kw_clean:
+            continue
+        
+        # Exact word boundary match on normalized text (avoids 'ai' in 'email' or 'ml' in 'html')
+        pattern = r'\b' + re.escape(kw_clean) + r'\b'
+        if re.search(pattern, normalized_text, re.IGNORECASE):
+            matched_keywords.append(kw_clean)
+        # Also check compact match for terms like 'aiml', 'genai', 'machinelearning'
+        elif len(kw_clean) > 3 and kw_clean.replace(" ", "") in compact_text:
+            matched_keywords.append(kw_clean)
 
     if not matched_keywords:
         return False, "No matching profile keywords found in post"
