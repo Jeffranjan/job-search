@@ -83,6 +83,11 @@ class Config:
     MAX_EMAILS_PER_DAY: int = int(os.getenv("MAX_EMAILS_PER_DAY", "30"))
     DELAY_BETWEEN_EMAILS: int = int(os.getenv("DELAY_BETWEEN_EMAILS", "60"))
 
+    # ─── PIPELINE MODE ──────────────────────────────────────
+    # SCRAPE_MODE=true  → Full pipeline: scrape LinkedIn → extract emails → AI email → send
+    # SCRAPE_MODE=false → Skip scraping: use MongoDB backlog only → AI email → send
+    SCRAPE_MODE: bool = os.getenv("SCRAPE_MODE", "true").lower() == "true"
+
     @classmethod
     def validate(cls):
         """Validate required configs are set"""
@@ -105,6 +110,8 @@ class Config:
         print("=" * 50)
         print("📋 CURRENT CONFIGURATION")
         print("=" * 50)
+        mode_label = "🟢 FULL PIPELINE (Scrape + Email)" if cls.SCRAPE_MODE else "🟡 EMAIL-ONLY MODE (MongoDB Backlog)"
+        print(f"  Pipeline Mode    : {mode_label}")
         print(f"  Scrape Days      : {cls.LINKEDIN_SCRAPE_DAYS}")
         print(f"  Hashtags         : {cls.LINKEDIN_HASHTAGS}")
         print(f"  Ollama Model     : {cls.OLLAMA_MODEL}")

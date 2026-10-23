@@ -187,32 +187,37 @@ def clean_subject(subject: str) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 # OLLAMA CALLER
 # ─────────────────────────────────────────────────────────────────────────────
-def _call_ollama(prompt: str, max_tokens: int = 600, temperature: float = 0.7) -> str | None:
-    """Call Ollama API. Returns response text or None on failure."""
-    try:
-        response = requests.post(
-            f"{Config.OLLAMA_BASE_URL}/api/generate",
-            json={
-                "model": Config.OLLAMA_MODEL,
-                "prompt": prompt,
-                "stream": False,
-                "options": {
-                    "temperature": temperature,
-                    "num_predict": max_tokens,
-                }
-            },
-            timeout=120
-        )
-        response.raise_for_status()
-        data = response.json()
-        resp_text = (data.get("response") or "").strip()
-        return resp_text if resp_text else None
-    except requests.exceptions.ConnectionError:
-        print(f"[Ollama] Connection error at {Config.OLLAMA_BASE_URL}")
-        return None
-    except Exception as e:
-        print(f"[Ollama] Generation failed: {e}")
-        return None
+def _call_ollama(prompt: str, max_tokens: int = 600, temperature: float = 0.7, retries: int = 2) -> str | None:
+    """Call Ollama API with retry logic. Returns response text or None on failure."""
+    for attempt in range(1, retries + 1):
+        try:
+            response = requests.post(
+                f"{Config.OLLAMA_BASE_URL}/api/generate",
+                json={
+                    "model": Config.OLLAMA_MODEL,
+                    "prompt": prompt,
+                    "stream": False,
+                    "options": {
+                        "temperature": temperature,
+                        "num_predict": max_tokens,
+                    }
+                },
+                timeout=300   # 5 min — handles large models like nemotron:33b, gpt-oss:20b
+            )
+            response.raise_for_status()
+            data = response.json()
+            resp_text = (data.get("response") or "").strip()
+            if resp_text:
+                return resp_text
+            print(f"[Ollama] Empty response on attempt {attempt}/{retries}")
+        except requests.exceptions.Timeout:
+            print(f"[Ollama] Timeout on attempt {attempt}/{retries} (model may be slow)")
+        except requests.exceptions.ConnectionError:
+            print(f"[Ollama] Connection error at {Config.OLLAMA_BASE_URL}")
+            return None   # no point retrying a connection error
+        except Exception as e:
+            print(f"[Ollama] Generation failed (attempt {attempt}/{retries}): {e}")
+    return None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -232,10 +237,10 @@ def generate_email_body(post_text: str, company: str = "") -> str:
         spam_words=", ".join(SPAM_WORDS[:12]),
     )
 
-    body = _call_ollama(prompt, max_tokens=350, temperature=0.75)
+    body = _call_ollama(prompt, max_tokens=500, temperature=0.75)
 
     if not body:
-        print("[Ollama] Using fallback email template")
+        print(f"[Ollama] ⚠️  No response from model — using fallback template")
         return _fallback_email_body(post_text)
 
     # Post-process for spam signals

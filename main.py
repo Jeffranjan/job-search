@@ -33,6 +33,21 @@ def print_banner():
     """)
 
 
+def print_mode_banner(scrape_mode: bool):
+    if scrape_mode:
+        print("""
+┌──────────────────────────────────────────────────────────┐
+│  🟢 MODE: FULL PIPELINE                                  │
+│     LinkedIn Scrape ➜ Extract ➜ AI Email ➜ Send          │
+└──────────────────────────────────────────────────────────┘""")
+    else:
+        print("""
+┌──────────────────────────────────────────────────────────┐
+│  🟡 MODE: EMAIL-ONLY (MongoDB Backlog)                   │
+│     Skipping scrape ➜ Using saved emails ➜ AI Email ➜ Send│
+└──────────────────────────────────────────────────────────┘""")
+
+
 def print_step(step: int, title: str):
     print(f"\n{'='*55}")
     print(f"  STEP {step}: {title}")
@@ -42,6 +57,7 @@ def print_step(step: int, title: str):
 def run_pipeline():
     """Main pipeline execution"""
     print_banner()
+    print_mode_banner(Config.SCRAPE_MODE)
     start_time = datetime.now()
 
     # ── Validate Config ────────────────────────────────────
@@ -68,75 +84,74 @@ def run_pipeline():
     print("\n[Init] Connecting to MongoDB...")
     db = MongoHandler()
 
-    # ─────────────────────────────────────────────────────────
-    # STEP 1: Scrape LinkedIn Posts
-    # ─────────────────────────────────────────────────────────
-    print_step(1, "SCRAPE LINKEDIN POSTS")
-
-    playwright, browser, context, page = get_authenticated_browser()
+    # ── Track totals for summary (initialized here so always defined) ──────
     all_posts = []
+    email_records = []
 
-    try:
-        all_posts = run_scraper(page)
-    finally:
-        browser.close()
-        playwright.stop()
+    if Config.SCRAPE_MODE:
+        # ─────────────────────────────────────────────────────────
+        # STEP 1: Scrape LinkedIn Posts
+        # ─────────────────────────────────────────────────────────
+        print_step(1, "SCRAPE LINKEDIN POSTS")
 
-    if not all_posts:
-        print("\n[Pipeline] ⚠️  No posts scraped. Exiting.")
-        db.close()
-        return
+        playwright, browser, context, page = get_authenticated_browser()
+        try:
+            all_posts = run_scraper(page)
+        finally:
+            browser.close()
+            playwright.stop()
 
-    # Save posts to MongoDB
-    new_posts = 0
-    for post in all_posts:
-        if db.save_post(post):
-            new_posts += 1
-    print(f"[Pipeline] 💾 Saved {new_posts} new posts to MongoDB ({len(all_posts) - new_posts} duplicates skipped)")
+        if not all_posts:
+            print("\n[Pipeline] ⚠️  No posts scraped — falling through to MongoDB backlog...")
 
-    # ─────────────────────────────────────────────────────────
-    # STEP 2: Filter by Relevancy & Experience Level
-    # ─────────────────────────────────────────────────────────
-    print_step(2, "FILTER BY RELEVANCY & EXPERIENCE")
-    print(f"[Filter] Target Keywords: {', '.join(Config.TARGET_ROLE_KEYWORDS[:5])}...")
-    print(f"[Filter] Maximum Target Exp: <= {Config.MAX_TARGET_EXPERIENCE} years")
+        # Save posts to MongoDB
+        new_posts = 0
+        for post in all_posts:
+            if db.save_post(post):
+                new_posts += 1
+        if all_posts:
+            print(f"[Pipeline] 💾 Saved {new_posts} new posts to MongoDB ({len(all_posts) - new_posts} duplicates skipped)")
 
-    relevant_posts = []
-    skipped_count = 0
+        # ─────────────────────────────────────────────────────────
+        # STEP 2: Filter by Relevancy & Experience Level
+        # ─────────────────────────────────────────────────────────
+        print_step(2, "FILTER BY RELEVANCY & EXPERIENCE")
+        print(f"[Filter] Target Keywords: {', '.join(Config.TARGET_ROLE_KEYWORDS[:5])}...")
+        print(f"[Filter] Maximum Target Exp: <= {Config.MAX_TARGET_EXPERIENCE} years")
 
-    for post in all_posts:
-        text = post.get("post_text", "")
-        is_rel, reason = is_job_relevant(text)
-        if is_rel:
-            relevant_posts.append(post)
+        relevant_posts = []
+        skipped_count = 0
+        for post in all_posts:
+            text = post.get("post_text", "")
+            is_rel, reason = is_job_relevant(text)
+            if is_rel:
+                relevant_posts.append(post)
+            else:
+                skipped_count += 1
+
+        print(f"[Filter] 🎯 {len(relevant_posts)} relevant posts kept | {skipped_count} skipped")
+
+        # ─────────────────────────────────────────────────────────
+        # STEP 3: Extract Email Addresses
+        # ─────────────────────────────────────────────────────────
+        print_step(3, "EXTRACT EMAIL ADDRESSES")
+
+        if relevant_posts:
+            email_records = extract_emails_from_posts(relevant_posts)
+            new_emails = 0
+            for record in email_records:
+                if db.save_email(record):
+                    new_emails += 1
+            print(f"[Pipeline] 💾 {new_emails} new emails saved | {len(email_records) - new_emails} already in DB")
         else:
-            skipped_count += 1
+            print("[Pipeline] ℹ️  No relevant posts — will still check MongoDB backlog below.")
 
-    print(f"[Filter] 🎯 {len(relevant_posts)} relevant posts kept | {skipped_count} skipped (unrelated role or seniority too high)")
-
-    if not relevant_posts:
-        print("[Pipeline] ⚠️  No posts matched the relevancy and experience criteria.")
-        db.close()
-        return
-
-    # ─────────────────────────────────────────────────────────
-    # STEP 3: Extract Email Addresses
-    # ─────────────────────────────────────────────────────────
-    print_step(3, "EXTRACT EMAIL ADDRESSES")
-
-    email_records = extract_emails_from_posts(relevant_posts)
-
-    if not email_records:
-        print("[Pipeline] ⚠️  No emails found in relevant posts.")
-        db.close()
-        return
-
-    # Save emails to MongoDB (deduplication by unique index)
-    new_emails = 0
-    for record in email_records:
-        if db.save_email(record):
-            new_emails += 1
-    print(f"[Pipeline] 💾 {new_emails} new emails saved | {len(email_records) - new_emails} already in DB")
+    else:
+        # ─────────────────────────────────────────────────────────
+        # SCRAPE_MODE = false → skip Steps 1-3 entirely
+        # ─────────────────────────────────────────────────────────
+        print("\n[Pipeline] ⏭️  SCRAPE_MODE=false — Skipping Steps 1-3 (no browser launched)")
+        print("[Pipeline] 📂 Loading emails directly from MongoDB backlog...")
 
     # ─────────────────────────────────────────────────────────
     # STEP 4: Filter via MongoDB (Cooldown Check)
@@ -246,12 +261,17 @@ def run_pipeline():
     elapsed = (datetime.now() - start_time).seconds
     stats = db.get_stats()
 
+    mode_str = "🟢 FULL PIPELINE" if Config.SCRAPE_MODE else "🟡 EMAIL-ONLY MODE"
+    posts_scraped_display = len(all_posts) if Config.SCRAPE_MODE else "(skipped)"
+    emails_extracted_display = len(email_records) if Config.SCRAPE_MODE else "(skipped)"
+
     print(f"""
 ╔══════════════════════════════════════════════════════════╗
 ║                   PIPELINE COMPLETE ✅                   ║
 ╠══════════════════════════════════════════════════════════╣
-║  Posts Scraped Today    : {len(all_posts):<30}║
-║  Emails Extracted       : {len(email_records):<30}║
+║  Run Mode               : {mode_str:<30}║
+║  Posts Scraped Today    : {str(posts_scraped_display):<30}║
+║  Emails Extracted       : {str(emails_extracted_display):<30}║
 ║  Emails Sent Today      : {sum(1 for r in results if r['status']=='sent'):<30}║
 ║  Failed                 : {sum(1 for r in results if r['status']=='failed'):<30}║
 ╠══════════════════════════════════════════════════════════╣
