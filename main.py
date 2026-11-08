@@ -38,7 +38,7 @@ def print_mode_banner(scrape_mode: bool):
         print("""
 ┌──────────────────────────────────────────────────────────┐
 │  🟢 MODE: FULL PIPELINE                                  │
-│     LinkedIn Scrape ➜ Extract ➜ AI Email ➜ Send          │
+│     LinkedIn Scrape ➜ Extract ➜ AI Email ➜ Send        │
 └──────────────────────────────────────────────────────────┘""")
     else:
         print("""
