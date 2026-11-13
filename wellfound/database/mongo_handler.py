@@ -46,12 +46,12 @@ class WellfoundMongoHandler:
             return False
 
     def get_jobs_not_applied(self, cooldown_days: int = 30) -> list[dict]:
-        """Return jobs not yet successfully applied to."""
+        """Return jobs not yet successfully applied to or closed."""
         cutoff = datetime.utcnow() - timedelta(days=cooldown_days)
         applied_ids = set(
             d["job_id"] for d in self.applied.find(
                 {
-                    "status": {"$in": ["applied", "already_applied", "external_ats"]},
+                    "status": {"$in": ["applied", "already_applied", "external_ats", "closed"]},
                     "applied_at": {"$gte": cutoff}
                 },
                 {"job_id": 1}

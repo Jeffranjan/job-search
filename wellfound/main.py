@@ -17,8 +17,14 @@ Usage:
 import sys
 import time
 import random
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
+
+# Ensure UTF-8 output to prevent Windows cp1252 charmap encoding errors
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 # ── Path setup (resolve shared modules) ─────────────────────────
 ROOT = Path(__file__).resolve().parent.parent
@@ -129,7 +135,6 @@ def run_pipeline():
     db.clean_false_already_applied()
 
     all_jobs:    list[dict] = []
-    email_records: list[dict] = []
     apply_results: list[dict] = []
 
     # ── STEP 1: Job Discovery (Scrape or Load from MongoDB) ───────
@@ -175,46 +180,68 @@ def run_pipeline():
             relevant.append(j)
         else:
             skipped += 1
-    print(f"[Filter] 🎯 {len(relevant)} relevant | {skipped} skipped")
+
+    # Check already-applied status for clarity
+    applied_cutoff = datetime.utcnow() - timedelta(days=Config.APPLY_COOLDOWN_DAYS)
+    already_applied_ids = set(
+        d["job_id"] for d in db.applied.find(
+            {
+                "status": {"$in": ["applied", "already_applied", "external_ats"]},
+                "applied_at": {"$gte": applied_cutoff}
+            },
+            {"job_id": 1}
+        )
+    )
+    relevant_ids = {j.get("job_id") for j in relevant}
+    already_done = len(relevant_ids.intersection(already_applied_ids))
+    pending_new  = len(relevant) - already_done
+
+    print(f"[Filter] 🎯 {len(relevant)} jobs match your profile keywords ({skipped} skipped)")
+    print(f"[Filter] 📊 Breakdown: {already_done} already applied | {pending_new} pending new application")
 
     # ── STEP 3: Auto-Apply (native Wellfound) ────────────────
     if Config.AUTO_APPLY and relevant:
         print_step(3, f"AUTO-APPLY TO WELLFOUND JOBS (max {Config.MAX_APPLIES_PER_DAY}/day)")
         jobs_to_apply = db.get_jobs_not_applied(Config.APPLY_COOLDOWN_DAYS)
-        relevant_ids = {j.get("job_id") for j in relevant}
         pending = [j for j in jobs_to_apply
                    if j.get("job_id") in relevant_ids][:Config.MAX_APPLIES_PER_DAY]
 
         if pending:
-            print(f"[Apply] 📋 {len(pending)} jobs queued for application")
+            print(f"[Apply] 📋 {len(pending)} jobs queued for application (out of {pending_new} remaining)")
             playwright2, browser2, context2, page2 = get_authenticated_browser(
                 Config.EMAIL, Config.PASSWORD, Config.HEADLESS
             )
             applied_count, external_count = 0, 0
             try:
                 for i, job in enumerate(pending, 1):
-                    print(f"[Apply] [{i}/{len(pending)}] {job.get('title')} @ {job.get('company')}")
-                    result = auto_apply_to_job(
-                        page2, job,
-                        Config.YOUR_NAME, Config.YOUR_ROLE,
-                        Config.YOUR_SKILLS, Config.YOUR_EXPERIENCE,
-                        Config.OLLAMA_BASE_URL, Config.OLLAMA_MODEL,
-                        Config.APPLY_NOTE_MAX_WORDS,
-                    )
-                    db.save_application(result)
+                    try:
+                        title_clean   = job.get("title", "")
+                        company_clean = job.get("company", "")
+                        print(f"[Apply] [{i}/{len(pending)}] {title_clean} @ {company_clean}")
+                        result = auto_apply_to_job(
+                            page2, job,
+                            Config.YOUR_NAME, Config.YOUR_ROLE,
+                            Config.YOUR_SKILLS, Config.YOUR_EXPERIENCE,
+                            Config.OLLAMA_BASE_URL, Config.OLLAMA_MODEL,
+                            Config.APPLY_NOTE_MAX_WORDS,
+                        )
+                        db.save_application(result)
 
-                    if result["status"] == "applied":
-                        print(f"[Apply] ✅ Applied: {result['message']}")
-                        applied_count += 1
-                    elif result["status"] == "external_ats":
-                        print(f"[Apply] 🔗 External ATS → {result['message'][:80]}")
-                        external_count += 1
-                    elif result["status"] == "already_applied":
-                        print(f"[Apply] ⏭️  Already applied — skipping")
-                    else:
-                        print(f"[Apply] ❌ Failed: {result['message']}")
+                        if result["status"] == "applied":
+                            print(f"[Apply] ✅ Applied: {result['message']}")
+                            applied_count += 1
+                        elif result["status"] == "external_ats":
+                            print(f"[Apply] 🔗 External ATS → {result['message'][:80]}")
+                            external_count += 1
+                        elif result["status"] == "already_applied":
+                            print(f"[Apply] ⏭️  Already applied — skipping")
+                        else:
+                            print(f"[Apply] ❌ Failed: {result['message']}")
 
-                    apply_results.append(result)
+                        apply_results.append(result)
+                    except Exception as loop_err:
+                        print(f"[Apply] ⚠️  Error on job {i}: {loop_err}")
+
                     time.sleep(random.uniform(Config.DELAY_BETWEEN_ACTIONS,
                                              Config.DELAY_BETWEEN_ACTIONS + 2))
             finally:

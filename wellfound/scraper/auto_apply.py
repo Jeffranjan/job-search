@@ -2,9 +2,12 @@
 wellfound/scraper/auto_apply.py
 Automates the Wellfound native "Apply" button + modal submission.
 
-Key fix: React modal overlay intercepts pointer events, so we use
-JavaScript element.click() / dispatchEvent instead of Playwright .click()
-to bypass overlay blocking.
+Key fixes:
+1. Waits for React to mount the Apply button.
+2. React modal overlay intercepts pointer events, so we use
+   JavaScript element.click() / dispatchEvent instead of Playwright .click()
+   to bypass overlay blocking.
+3. Distinguishes active apply buttons from closed jobs.
 """
 
 import time
@@ -72,7 +75,6 @@ def _generate_intro_note(job: dict, your_name: str, your_role: str,
 def _close_any_blocking_modal(page: Page):
     """Dismiss any overlay/modal that might block the apply modal."""
     try:
-        # Try pressing Escape to close any extra dialog
         close_btns = page.query_selector_all(
             "button[aria-label='Close'], "
             "button[aria-label='Dismiss'], "
@@ -121,7 +123,19 @@ def auto_apply_to_job(
             return result
 
         page.goto(url, wait_until="load", timeout=30000)
-        time.sleep(random.uniform(2, 3))
+
+        # Wait up to 6 seconds for Apply button or status to mount in React DOM
+        try:
+            page.wait_for_selector(
+                "button:has-text('Apply'), "
+                "a:has-text('Apply'), "
+                "[data-test='apply-button'], "
+                "button:has-text('Applied')",
+                timeout=6000
+            )
+        except Exception:
+            pass
+        time.sleep(1)
 
         # ── Find Active Apply button first ────────────────────────
         # If an active Apply button exists, we have not applied yet!
@@ -129,11 +143,23 @@ def auto_apply_to_job(
             "button:has-text('Apply'):not([disabled]), "
             "button:has-text('Easy Apply'):not([disabled]), "
             "[data-test='apply-button']:not([disabled]), "
-            "a:has-text('Apply'):not([disabled])"
+            "a:has-text('Apply'):not([disabled]), "
+            "a[href*='/jobs/'][href*='/apply']:not([disabled])"
         )
 
         if not apply_btn:
-            # If no active Apply button, check if it's already applied or expired
+            # Check if job is closed / expired
+            closed_el = page.query_selector(
+                "div:has-text('no longer accepting applications'), "
+                "div:has-text('This job is closed'), "
+                "span:has-text('Job Closed')"
+            )
+            if closed_el:
+                result["status"]  = "closed"
+                result["message"] = "Job is closed / no longer accepting applications"
+                return result
+
+            # If no active Apply button, check if it's already applied
             already = page.query_selector(
                 "main button:has-text('Applied'), "
                 "button[disabled]:has-text('Applied'), "
@@ -274,13 +300,3 @@ def auto_apply_to_job(
         result["message"] = str(e)[:200]
 
     return result
-
-
-def json_safe(text: str) -> str:
-    """Escape text for safe embedding in JS string literals."""
-    return (
-        repr(text)
-        .replace("\\n", "\\\\n")
-        .replace("\\r", "\\\\r")
-        .replace("\\t", "\\\\t")
-    )
