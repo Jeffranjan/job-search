@@ -69,16 +69,13 @@ def run_pipeline():
         print(f"\n{e}")
         sys.exit(1)
 
-    # ── Check Ollama Status ────────────────────────────────
-    print("\n[Init] Checking Ollama status...")
-    ollama_status = check_ollama_status()
-    if ollama_status["running"]:
-        print(f"[Init] ✅ Ollama running | Model '{Config.OLLAMA_MODEL}' available: {ollama_status['model_available']}")
-        if not ollama_status["model_available"]:
-            print(f"[Init] ⚠️  Available models: {ollama_status['available_models']}")
-            print(f"[Init] ⚠️  Run: ollama pull {Config.OLLAMA_MODEL}")
+    # ── Check AI Status ────────────────────────────────────
+    print("\n[Init] Checking AI status...")
+    ai_status = check_ollama_status()
+    if ai_status.get("running"):
+        print(f"[Init] ✅ AI Engine ready | {ai_status.get('info', 'Active')}")
     else:
-        print("[Init] ⚠️  Ollama not running. Will use fallback email template.")
+        print("[Init] ⚠️  AI engine unavailable. Will use fallback email template.")
 
     # ── Connect to MongoDB ─────────────────────────────────
     print("\n[Init] Connecting to MongoDB...")
@@ -195,65 +192,69 @@ def run_pipeline():
     print(f"[Pipeline] 🎯 {len(verified_emails)} verified emails ready to send")
 
     # ─────────────────────────────────────────────────────────
-    # STEP 6: Generate AI Emails via Ollama
+    # STEP 6: Outreach — Generate, Deliver & Log in Real Time
     # ─────────────────────────────────────────────────────────
-    print_step(6, f"GENERATE EMAILS WITH OLLAMA ({Config.OLLAMA_MODEL.upper()})")
-
-    email_queue = []
-    for i, record in enumerate(verified_emails, 1):
-        print(f"\n[Ollama] [{i}/{len(verified_emails)}] Generating email for: {record['email']}")
-
-        post_text = record.get("post_text", "AI/ML job opportunity")
-        company = record.get("company", "")
-
-        body = generate_email_body(post_text, company)
-        subject = generate_subject_line(post_text, company)
-
-        email_queue.append({
-            "email": record["email"],
-            "subject": subject,
-            "body": body,
-            "post_url": record.get("post_url", ""),
-            "company": company,
-        })
-
-        # Brief delay between Ollama calls
-        if i < len(verified_emails):
-            time.sleep(2)
-
-    # ─────────────────────────────────────────────────────────
-    # STEP 7: Send Emails via SMTP
-    # ─────────────────────────────────────────────────────────
-    print_step(7, "SEND EMAILS VIA SMTP")
+    ai_model_name = Config.GEMINI_MODEL.upper() if Config.GEMINI_API_KEY else Config.OLLAMA_MODEL.upper()
+    ai_provider_name = "GEMINI" if Config.GEMINI_API_KEY else "OLLAMA"
+    print_step(6, f"OUTREACH: GENERATE & DELIVER ({ai_provider_name})")
 
     mailer = SMTPHandler()
 
-    # Test connection first
+    # Test SMTP connection first
     if not mailer.test_connection():
         print("[Pipeline] ❌ SMTP connection failed. Check your .env SMTP settings.")
         db.close()
         return
 
-    results = mailer.send_batch(email_queue)
+    results = []
+    total_emails = len(verified_emails)
 
-    # ─────────────────────────────────────────────────────────
-    # STEP 8: Log Results to MongoDB
-    # ─────────────────────────────────────────────────────────
-    print_step(8, "LOG RESULTS TO MONGODB")
+    for i, record in enumerate(verified_emails, 1):
+        target_email = record["email"]
+        post_text = record.get("post_text", "Full Stack Developer opportunity")
+        company = record.get("company", "")
+        post_url = record.get("post_url", "")
 
-    for result in results:
+        print(f"\n[Outreach] [{i}/{total_emails}] Processing candidate lead: {target_email}")
+
+        # 1. Generate body and subject (AI or fast template fallback)
+        body = generate_email_body(post_text, company)
+        subject = generate_subject_line(post_text, company)
+
+        # 2. Send email via SMTP immediately
+        print(f"[Outreach] ✉️  Dispatching application to {target_email}...")
+        result = mailer.send_email(
+            to_email=target_email,
+            subject=subject,
+            body=body,
+        )
+        result["post_url"] = post_url
+        result["company"] = company
+        results.append(result)
+
+        # 3. Log result immediately to MongoDB
         if result["status"] == "sent":
-            # Find matching email queue item for body/subject
-            matched = next((e for e in email_queue if e["email"] == result["email"]), {})
             db.log_sent_email(
-                email=result["email"],
-                subject=matched.get("subject", ""),
-                body=matched.get("body", ""),
-                post_url=result.get("post_url", ""),
-                company=result.get("company", ""),
+                email=target_email,
+                subject=subject,
+                body=body,
+                post_url=post_url,
+                company=company,
             )
-        elif result["status"] == "failed":
-            db.update_email_status(result["email"], "bounced")
+            print(f"[Outreach] ✅ Successfully sent & saved to DB ({mailer._sent_count}/{Config.MAX_EMAILS_PER_DAY})")
+        else:
+            db.update_email_status(target_email, "bounced")
+            print(f"[Outreach] ⚠️ Failed sending to {target_email}: {result.get('error')}")
+
+        # Check daily limit
+        err_msg = result.get("error") or ""
+        if err_msg.startswith("Daily limit"):
+            print(f"[Outreach] 🛑 Daily limit reached ({Config.MAX_EMAILS_PER_DAY}). Stopping.")
+            break
+
+        # Human-like delay between sent emails
+        if i < total_emails and result["status"] == "sent":
+            mailer._human_send_delay()
 
     # ─────────────────────────────────────────────────────────
     # FINAL SUMMARY

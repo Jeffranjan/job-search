@@ -9,6 +9,7 @@ import os
 import time
 import random
 import sys
+import threading
 from playwright.sync_api import sync_playwright, BrowserContext, Page
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -243,130 +244,140 @@ def _build_scrape_context(playwright):
 def manual_login(page: Page, context: BrowserContext):
     """
     Opens LinkedIn login in Playwright browser.
-    Simple polling loop — checks URL every 2 seconds.
-    No threading (Playwright sync API is not thread-safe).
+    Multi-signal detection:
+    1. 'li_at' session cookie in context.cookies() (instant & 100% reliable)
+    2. URL checks across all open tabs in context.pages (/feed, /mynetwork, /home)
+    3. DOM element evaluation on all pages (Global Nav, Search input, Profile, etc.)
+    4. Non-blocking ENTER listener on terminal (press ENTER anytime once on feed)
     """
     print("\n" + "=" * 60)
     print("🔐  FIRST TIME SETUP — MANUAL LOGIN REQUIRED")
     print("=" * 60)
-    print("  ⚠️  A NEW browser window has opened (separate from your Chrome)")
-    print("  ⚠️  Switch to THAT window and login there")
-    print("")
-    print("  Steps in the Playwright browser:")
-    print("    1. Enter your LinkedIn email & password")
-    print("    2. Click 'Sign in'")
-    print("    3. Complete CAPTCHA / OTP / verification if asked")
-    print("    4. WAIT until you see your LinkedIn FEED")
-    print("")
-    print("  This terminal will auto-detect when you are logged in.")
+    print("  An automated browser window has opened for LinkedIn login.")
+    print("  1. In THAT window, enter your LinkedIn credentials and sign in.")
+    print("  2. Complete any 2FA / OTP / Captcha verification if prompted.")
+    print("  3. The script will auto-detect your login as soon as you reach your feed.")
+    print("  💡 Tip: You can also press ENTER in this terminal at ANY time once logged in!")
     print("=" * 60 + "\n")
 
     page.goto("https://www.linkedin.com/login", wait_until="domcontentloaded")
     _human_pause(1, 2)
 
-    # ── Inject a BIG RED BANNER so user knows this is the right window ─
-    try:
-        page.evaluate("""
-            const banner = document.createElement('div');
-            banner.id = 'playwright-banner';
-            banner.style.cssText = `
-                position: fixed;
-                top: 0; left: 0;
-                width: 100%;
-                background: #cc0000;
-                color: white;
-                font-size: 18px;
-                font-weight: bold;
-                text-align: center;
-                padding: 14px;
-                z-index: 999999;
-                letter-spacing: 0.5px;
-                box-shadow: 0 3px 10px rgba(0,0,0,0.4);
-            `;
-            banner.textContent = '⚠️  LOGIN HERE — This is the AUTOMATED BROWSER (not your regular Chrome)  ⚠️';
-            document.body.prepend(banner);
-            document.body.style.marginTop = '55px';
-        """)
-    except Exception:
-        pass
-
-    # Bring the Playwright browser to front
     try:
         page.bring_to_front()
     except Exception:
         pass
 
-    print("[Session] Checking every 2 seconds for login...")
-    print("[Session] (Waiting — do NOT press anything here yet)\n")
+    # Start non-blocking listener for Enter key in terminal
+    enter_pressed = threading.Event()
 
-    # ── Simple polling loop — no threading ────────────────────
-    LOGGED_IN_PATTERNS = ["/feed", "/mynetwork", "/home", "/checkpoint",
-                          "/challenge", "/uas/oauth"]
+    def _listen_for_enter():
+        try:
+            sys.stdin.readline()
+            enter_pressed.set()
+        except Exception:
+            pass
+
+    t = threading.Thread(target=_listen_for_enter, daemon=True)
+    t.start()
+
+    print("[Session] Watching for login (cookies, all tabs & feed)...")
+    print("[Session] (Or press ENTER here as soon as you see your feed in the browser)\n")
+
     max_wait = 300    # 5 minutes
-    interval = 2
-    elapsed  = 0
-    last_url = ""
+    interval = 1.5
+    elapsed = 0
 
     while elapsed < max_wait:
         time.sleep(interval)
         elapsed += interval
 
+        # ── 1. Check cookies across the entire browser context ────────
         try:
-            current_url = page.url
-        except Exception:
-            # Page closed or crashed
-            break
-
-        # Show URL change so user knows script is working
-        if current_url != last_url:
-            print(f"[Session] URL changed → {current_url[:80]}")
-            last_url = current_url
-
-        # Check if logged in (on feed or any post-login page)
-        if any(p in current_url for p in LOGGED_IN_PATTERNS):
-            # Handle checkpoint / OTP pages
-            if "/checkpoint" in current_url or "/challenge" in current_url:
-                print("\n[Session] ⚠️  LinkedIn needs verification/OTP.")
-                print("[Session]    Complete it in the browser window.")
-                print("[Session]    Press ENTER here AFTER you see the LinkedIn feed.\n")
-                input("[Session] ▶ Press ENTER when on LinkedIn feed → ")
-                _human_pause(2, 3)
-                current_url = page.url
-
-            if any(p in current_url for p in ["/feed", "/mynetwork", "/home"]):
-                print(f"\n[Session] ✅ Login detected!")
+            cookies = context.cookies()
+            has_li_at = any(
+                c.get("name") == "li_at" and len(c.get("value", "")) > 10
+                for c in cookies
+            )
+            if has_li_at:
+                print(f"\n[Session] ✅ Login detected via 'li_at' session cookie!")
                 _human_pause(1, 2)
                 save_cookies(context)
                 print("[Session] ✅ Session saved — future runs are fully automatic!")
                 return
+        except Exception:
+            pass
 
-        # Show progress dot every 10 seconds
-        if elapsed % 10 == 0:
-            print(f"[Session] Still waiting... {elapsed}s | Current URL: {page.url[:60]}")
+        # ── 2. Check all open pages/tabs in the context ───────────────
+        try:
+            for p in list(context.pages):
+                try:
+                    u = p.url.lower()
+                    if any(pat in u for pat in ["/feed", "/mynetwork", "/home"]):
+                        print(f"\n[Session] ✅ Login detected on tab: {p.url[:60]}")
+                        _human_pause(1, 2)
+                        save_cookies(context)
+                        print("[Session] ✅ Session saved — future runs are fully automatic!")
+                        return
 
-    # ── Timeout fallback — ask user to confirm manually ───────
+                    # Evaluate client-side location in case page.url hasn't synced
+                    js_url = p.evaluate("window.location.href").lower()
+                    if any(pat in js_url for pat in ["/feed", "/mynetwork", "/home"]):
+                        print(f"\n[Session] ✅ Login detected via client location: {js_url[:60]}")
+                        _human_pause(1, 2)
+                        save_cookies(context)
+                        print("[Session] ✅ Session saved — future runs are fully automatic!")
+                        return
+
+                    # Check for feed UI elements
+                    has_feed = p.evaluate(
+                        "() => !!document.querySelector('.global-nav, input[aria-label*=\"Search\"], a[href*=\"/in/\"], .feed-shared-update-v2')"
+                    )
+                    if has_feed:
+                        print("\n[Session] ✅ Login detected via LinkedIn feed elements!")
+                        _human_pause(1, 2)
+                        save_cookies(context)
+                        print("[Session] ✅ Session saved — future runs are fully automatic!")
+                        return
+                except Exception:
+                    continue
+        except Exception:
+            pass
+
+        # ── 3. Check if user pressed ENTER in terminal ─────────────────
+        if enter_pressed.is_set():
+            print("\n[Session] ▶ ENTER detected — verifying session...")
+            for p in list(context.pages):
+                try:
+                    p.goto("https://www.linkedin.com/feed/", timeout=15000, wait_until="domcontentloaded")
+                    _human_pause(1, 2)
+                    if any(pat in p.url.lower() for pat in ["/feed", "/mynetwork", "/home"]):
+                        save_cookies(context)
+                        print("[Session] ✅ Session verified and saved!")
+                        return
+                except Exception:
+                    pass
+
+            cookies = context.cookies()
+            if any(c.get("name") == "li_at" and len(c.get("value", "")) > 10 for c in cookies):
+                save_cookies(context)
+                print("[Session] ✅ Session verified via cookie and saved!")
+                return
+
+            print("[Session] ⚠️  LinkedIn session not yet active in this automated browser.")
+            print("[Session] Please ensure you entered your credentials inside the automated Chrome window.")
+            enter_pressed.clear()
+            threading.Thread(target=_listen_for_enter, daemon=True).start()
+
+        # Log status every 10s
+        if int(elapsed) % 10 == 0:
+            urls = [p.url[:45] for p in context.pages]
+            print(f"[Session] Waiting for login... {int(elapsed)}s | Tabs: {urls}")
+
+    # ── Timeout fallback ──────────────────────────────────────────────
     print("\n[Session] Auto-detect timed out after 5 minutes.")
-    print("[Session] If you are now on your LinkedIn feed, press ENTER.")
-    print("[Session] The script will verify and save the session.\n")
-    input("[Session] ▶ Press ENTER when you are on LinkedIn feed → ")
-
-    _human_pause(1, 2)
-
-    # Navigate to feed explicitly to verify
-    try:
-        page.goto("https://www.linkedin.com/feed/",
-                  timeout=15000, wait_until="domcontentloaded")
-        _human_pause(2, 3)
-    except Exception:
-        pass
-
-    if any(p in page.url for p in ["/feed", "/mynetwork", "/home"]):
-        save_cookies(context)
-        print("[Session] ✅ Session saved!")
-        return
-
-    print("[Session] ❌ Still not on feed. Please re-run the script and try again.")
-    raise Exception("LinkedIn login could not be confirmed")
+    print("[Session] Attempting to save current cookies regardless...")
+    save_cookies(context)
 
 
 def get_authenticated_browser():
@@ -380,6 +391,34 @@ def get_authenticated_browser():
                                      save cookies, return scrape context
     """
     playwright = sync_playwright().start()
+
+    # ── STEP 0: Check if LI_AT_COOKIE is provided in environment ───
+    li_at_env = os.getenv("LI_AT_COOKIE", "").strip() or os.getenv("LINKEDIN_LI_AT", "").strip()
+    if li_at_env and not os.path.exists(COOKIE_FILE):
+        print("[Session] Found LI_AT_COOKIE in environment — generating session...")
+        ensure_session_dir()
+        initial_cookies = [
+            {
+                "name": "li_at",
+                "value": li_at_env,
+                "domain": ".linkedin.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "sameSite": "None",
+            },
+            {
+                "name": "li_at",
+                "value": li_at_env,
+                "domain": ".www.linkedin.com",
+                "path": "/",
+                "secure": True,
+                "httpOnly": True,
+                "sameSite": "None",
+            }
+        ]
+        with open(COOKIE_FILE, "w") as f:
+            json.dump(initial_cookies, f, indent=2)
 
     # ── STEP 1: Try saved cookies with scrape context ─────────
     if os.path.exists(COOKIE_FILE):

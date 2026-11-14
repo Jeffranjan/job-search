@@ -59,9 +59,14 @@ class Config:
     YOUR_PORTFOLIO: str = os.getenv("YOUR_PORTFOLIO", "")    # Optional
     RESUME_PATH: str = os.getenv("RESUME_PATH", "assets/resume.pdf")
 
-    # ─── OLLAMA ─────────────────────────────────────────────
+    # ─── GOOGLE AI STUDIO / GEMINI ──────────────────────────
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "").strip()
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-flash-lite-latest").strip()
+    AI_PROVIDER: str = "gemini" if GEMINI_API_KEY else "ollama"
+
+    # ─── OLLAMA (LOCAL FALLBACK) ────────────────────────────
     OLLAMA_BASE_URL: str = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma")
+    OLLAMA_MODEL: str = os.getenv("OLLAMA_MODEL", "gemma3:12b")
 
     # ─── SMTP ───────────────────────────────────────────────
     SMTP_HOST: str = os.getenv("SMTP_HOST", "smtp.gmail.com")
@@ -114,7 +119,10 @@ class Config:
         print(f"  Pipeline Mode    : {mode_label}")
         print(f"  Scrape Days      : {cls.LINKEDIN_SCRAPE_DAYS}")
         print(f"  Hashtags         : {cls.LINKEDIN_HASHTAGS}")
-        print(f"  Ollama Model     : {cls.OLLAMA_MODEL}")
+        if cls.AI_PROVIDER == "gemini":
+            print(f"  AI Provider      : 🔵 Google AI Studio ({cls.GEMINI_MODEL})")
+        else:
+            print(f"  AI Provider      : 🦙 Ollama ({cls.OLLAMA_MODEL})")
         print(f"  SMTP Email       : {cls.SMTP_EMAIL}")
         print(f"  MongoDB URI      : {cls.MONGO_URI}")
         print(f"  Your Role        : {cls.YOUR_ROLE}")
