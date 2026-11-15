@@ -178,6 +178,7 @@ def clean_subject(subject: str) -> str:
 # CIRCUIT BREAKER STATE FLAGS
 # ─────────────────────────────────────────────────────────────────────────────
 _gemini_quota_exhausted = False
+_gemini_consecutive_429 = 0
 _ollama_unavailable = False
 
 
@@ -188,9 +189,9 @@ def _call_gemini(prompt: str, max_tokens: int = 1000, temperature: float = 0.7) 
     """
     Call Google AI Studio (Gemini) REST API.
     Tries primary configured model, with automatic failover to backup model.
-    Handles temporary 503 load spikes gracefully without tripping the quota breaker.
+    Handles temporary 503 load spikes gracefully and trips circuit breaker on persistent 429.
     """
-    global _gemini_quota_exhausted
+    global _gemini_quota_exhausted, _gemini_consecutive_429
     if _gemini_quota_exhausted or not Config.GEMINI_API_KEY:
         return None
 
@@ -199,6 +200,7 @@ def _call_gemini(prompt: str, max_tokens: int = 1000, temperature: float = 0.7) 
         candidate_models.insert(0, Config.GEMINI_MODEL)
 
     quota_exhausted_count = 0
+    had_429 = False
 
     for model_name in candidate_models:
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={Config.GEMINI_API_KEY}"
@@ -220,6 +222,7 @@ def _call_gemini(prompt: str, max_tokens: int = 1000, temperature: float = 0.7) 
             try:
                 resp = requests.post(url, json=payload, timeout=20)
                 if resp.status_code == 200:
+                    _gemini_consecutive_429 = 0
                     data = resp.json()
                     candidates = data.get("candidates", [])
                     if candidates:
@@ -236,15 +239,19 @@ def _call_gemini(prompt: str, max_tokens: int = 1000, temperature: float = 0.7) 
                         print(f"[Gemini] '{model_name}' busy (503) — trying alternate model...")
                         break
                 elif resp.status_code == 429:
+                    had_429 = True
                     err_text = resp.text.lower()
                     if "quota" in err_text or "resource_exhausted" in err_text or "limit exceeded" in err_text:
                         print(f"[Gemini] ⚠️ Model '{model_name}' daily quota exhausted.")
                         quota_exhausted_count += 1
                         break
                     else:
-                        print(f"[Gemini] Rate limit hit on '{model_name}'. Retrying in 2s...")
-                        time.sleep(2)
-                        continue
+                        if attempt == 1:
+                            print(f"[Gemini] Rate limit hit on '{model_name}'. Retrying in 2s...")
+                            time.sleep(2)
+                            continue
+                        else:
+                            break
                 else:
                     print(f"[Gemini] API returned HTTP {resp.status_code} for {model_name}")
                     break
@@ -252,10 +259,13 @@ def _call_gemini(prompt: str, max_tokens: int = 1000, temperature: float = 0.7) 
                 print(f"[Gemini] Request failed for {model_name}: {e}")
                 break
 
-    # Only trip permanent quota breaker if ALL candidate models reported quota exhaustion
-    if quota_exhausted_count >= len(candidate_models) and not _gemini_quota_exhausted:
+    if had_429:
+        _gemini_consecutive_429 += 1
+
+    # Trip permanent quota breaker if candidate models exhausted or persistent 429
+    if (quota_exhausted_count >= len(candidate_models) or _gemini_consecutive_429 >= 2) and not _gemini_quota_exhausted:
         _gemini_quota_exhausted = True
-        print("\n[AI] ⚡ Gemini daily quota reached. Switching to curated template for remaining emails.")
+        print("\n[AI] ⚡ Gemini quota / rate limit reached. Instantly switching to curated templates for all remaining emails.")
 
     return None
 

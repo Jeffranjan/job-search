@@ -4,108 +4,29 @@ tools/export_cookies.py
 BACKUP LOGIN METHOD — Use this if the Playwright browser login fails.
 
 How to use:
-  1. Open your REGULAR Chrome browser
-  2. Login to LinkedIn normally (linkedin.com)
-  3. Make sure you can see your LinkedIn feed
-  4. Run this script:
+  1. Run this script:
         python tools/export_cookies.py
-  5. It will read LinkedIn cookies from Chrome and save them
-  6. Then run: python main.py  (login will be skipped automatically!)
+  2. A Chrome window will open. Login to LinkedIn normally.
+  3. Once on your LinkedIn feed, press ENTER in the terminal.
+  4. Cookies are saved to session/cookies.json.
+  5. Then run: python main.py  (login will be skipped automatically!)
 ─────────────────────────────────────────────────────────────
 """
 
 import json
 import os
 import sys
-import sqlite3
-import shutil
-import tempfile
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-SESSION_DIR  = os.path.join(os.path.dirname(__file__), "..", "session")
-COOKIE_FILE  = os.path.join(SESSION_DIR, "cookies.json")
-
-# Chrome cookie DB path on Windows
-CHROME_COOKIE_PATH = os.path.expandvars(
-    r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Network\Cookies"
-)
-# Fallback older path
-CHROME_COOKIE_PATH_OLD = os.path.expandvars(
-    r"%LOCALAPPDATA%\Google\Chrome\User Data\Default\Cookies"
-)
-
-LINKEDIN_DOMAIN = ".linkedin.com"
-
-
-def find_chrome_cookie_db() -> str | None:
-    """Find Chrome's cookie database file"""
-    for path in [CHROME_COOKIE_PATH, CHROME_COOKIE_PATH_OLD]:
-        if os.path.exists(path):
-            return path
-    return None
-
-
-def read_chrome_cookies() -> list[dict]:
-    """
-    Read LinkedIn cookies from Chrome's SQLite cookie database.
-    Copies DB to temp location first (Chrome may lock the file).
-    Note: Chrome encrypts cookie values — we export what's readable.
-    """
-    db_path = find_chrome_cookie_db()
-    if not db_path:
-        print("❌ Chrome cookie database not found!")
-        print("   Make sure Google Chrome is installed.")
-        return []
-
-    print(f"Found Chrome cookies at:\n  {db_path}\n")
-
-    # Copy to temp (Chrome may have it locked)
-    tmp = tempfile.mktemp(suffix=".db")
-    shutil.copy2(db_path, tmp)
-
-    cookies = []
-    try:
-        conn = sqlite3.connect(tmp)
-        cursor = conn.cursor()
-
-        # Query LinkedIn cookies
-        cursor.execute("""
-            SELECT host_key, name, path, is_secure, expires_utc, is_httponly
-            FROM cookies
-            WHERE host_key LIKE '%linkedin.com%'
-        """)
-
-        rows = cursor.fetchall()
-        conn.close()
-
-        for row in rows:
-            host, name, path, secure, expires, httponly = row
-            cookies.append({
-                "name":     name,
-                "value":    "",          # Encrypted — will be overridden by Playwright
-                "domain":   host,
-                "path":     path,
-                "secure":   bool(secure),
-                "httpOnly": bool(httponly),
-                "sameSite": "None",
-            })
-
-        print(f"Found {len(rows)} LinkedIn cookie entries in Chrome")
-
-    except Exception as e:
-        print(f"❌ Error reading cookies: {e}")
-    finally:
-        os.unlink(tmp)
-
-    return cookies
+SESSION_DIR = os.path.join(os.path.dirname(__file__), "..", "session")
+COOKIE_FILE = os.path.join(SESSION_DIR, "cookies.json")
 
 
 def export_via_playwright() -> bool:
     """
-    Better method: Open Playwright with real Chrome, you login once,
-    cookies are captured automatically.
-    This is the most reliable approach.
+    Open Playwright with real Chrome, user logs in once,
+    cookies are captured and saved to session/cookies.json.
     """
     print("\n" + "=" * 55)
     print("COOKIE EXPORT VIA PLAYWRIGHT + REAL CHROME")
@@ -116,7 +37,6 @@ def export_via_playwright() -> bool:
 
     try:
         from playwright.sync_api import sync_playwright
-        import time
 
         os.makedirs(SESSION_DIR, exist_ok=True)
 
@@ -182,7 +102,7 @@ def export_via_playwright() -> bool:
 if __name__ == "__main__":
     print("=" * 55)
     print("  LinkedIn Cookie Export Tool")
-    print("  Backup login method for linkedin_scrapper")
+    print("  Backup login method for linkedin_scraper")
     print("=" * 55)
 
     success = export_via_playwright()

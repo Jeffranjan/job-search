@@ -148,16 +148,6 @@ def load_cookies(context: BrowserContext) -> bool:
     return True
 
 
-def is_logged_in(page: Page) -> bool:
-    """Check if LinkedIn session is active"""
-    try:
-        page.goto("https://www.linkedin.com/feed/", timeout=20000)
-        _human_pause(2, 4)
-        return "feed" in page.url or "mynetwork" in page.url
-    except Exception:
-        return False
-
-
 def _human_pause(min_s: float = 1.0, max_s: float = 3.0):
     """Random pause to mimic human thinking time"""
     time.sleep(random.uniform(min_s, max_s))

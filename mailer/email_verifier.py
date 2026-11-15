@@ -8,7 +8,6 @@ Pre-send email validation and verification:
 """
 
 import re
-import socket
 import dns.resolver
 
 # Standard strict email regex — local part must start with letter/digit

@@ -9,12 +9,11 @@ import time
 import random
 import os
 import sys
-import uuid
-from datetime import datetime
+import re
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.application import MIMEApplication
-from email.utils import formataddr, formatdate, make_msgid
+from email.utils import formataddr, formatdate
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from config import Config
@@ -53,7 +52,6 @@ def attach_signature(body: str) -> str:
     Attach static signature to email body.
     Strips any signature the AI may have written, then appends the real one.
     """
-    import re
     # Remove any signature AI may have added (after "Best regards" / "Thanks" etc.)
     body = re.split(
         r'\n(?:Best regards?|Thanks?|Regards?|Warm regards?|Cheers?|Sincerely)[,\s]*\n',

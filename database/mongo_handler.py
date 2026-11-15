@@ -15,7 +15,7 @@ from config import Config
 
 class MongoHandler:
     def __init__(self):
-        self.client = MongoClient(Config.MONGO_URI)
+        self.client = MongoClient(Config.MONGO_URI, serverSelectionTimeoutMS=3000)
         self.db = self.client[Config.MONGO_DB]
 
         # Collections
@@ -24,17 +24,26 @@ class MongoHandler:
         self.sent = self.db[Config.MONGO_SENT_COLLECTION]
         self.responses = self.db[Config.MONGO_RESPONSES_COLLECTION]
 
+        try:
+            self.client.admin.command('ping')
+            print(f"[MongoDB] ✅ Connected to '{Config.MONGO_DB}'")
+        except Exception as e:
+            print(f"[MongoDB] ⚠️ Connection warning: Could not ping MongoDB ({e}). Check if MongoDB service is running.")
+
         self._create_indexes()
-        print(f"[MongoDB] ✅ Connected to '{Config.MONGO_DB}'")
 
     def _create_indexes(self):
         """Create indexes for faster queries and uniqueness"""
-        # Unique email in extracted_emails
-        self.emails.create_index([("email", ASCENDING)], unique=True)
-        # Index on sent_at for cooldown queries
-        self.sent.create_index([("email", ASCENDING), ("sent_at", ASCENDING)])
-        # Unique post_url to avoid duplicate post scraping
-        self.posts.create_index([("post_url", ASCENDING)], unique=True)
+        try:
+            # Unique email in extracted_emails
+            self.emails.create_index([("email", ASCENDING)], unique=True)
+            # Index on sent_at for cooldown queries
+            self.sent.create_index([("email", ASCENDING), ("sent_at", ASCENDING)])
+            # Unique post_url (sparse so empty strings / missing URLs don't conflict)
+            self.posts.create_index([("post_url", ASCENDING)], unique=True, sparse=True)
+        except Exception:
+            # Tolerates existing indexes with legacy options without crashing
+            pass
 
     # ─── POSTS ──────────────────────────────────────────────
     def save_post(self, post: dict) -> bool:
